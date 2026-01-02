@@ -17,17 +17,16 @@ print("Loading and formatting dataset...")
 dataset = load_dataset("lavita/ChatDoctor-HealthCareMagic-100k", split="train[:500]")
 
 def format_row(row):
-    # Standard Mistral format: <s>[INST] Question [/INST] Answer </s>
-    prompt = f"<s>[INST] {row['input']} [/INST] {row['output']} </s>"
-    return {"text": prompt}
+    return {"text": f"<s>[INST] {row['input']} [/INST] {row['output']} </s>"}
 
 dataset = dataset.map(format_row)
 
-# 2. Quantization Config (FORCE FLOAT16)
+# 2. Quantization Config (A100 OPTIMIZED)
+# We use bfloat16 for computation. This matches the A100's native tensor cores.
 bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.float16,  # <--- SAFEGUARD 1: Strict Float16
+    bnb_4bit_compute_dtype=torch.bfloat16,  # <--- CHANGED to bfloat16
 )
 
 # 3. Load Model
@@ -35,7 +34,7 @@ print("Loading model...")
 model = AutoModelForCausalLM.from_pretrained(
     BASE_MODEL,
     quantization_config=bnb_config,
-    torch_dtype=torch.float16,             # <--- SAFEGUARD 2: Force model dtype
+    torch_dtype=torch.bfloat16,             # <--- CHANGED to bfloat16
     device_map="auto"
 )
 model.config.use_cache = False
@@ -56,13 +55,13 @@ peft_config = LoraConfig(
     target_modules=["q_proj", "v_proj"]
 )
 
-# 5. SFTConfig (The Modern Setup)
+# 5. SFTConfig
 sft_config = SFTConfig(
     output_dir="./results",
     dataset_text_field="text",
     # max_seq_length=512,
     num_train_epochs=1,
-    per_device_train_batch_size=4,
+    per_device_train_batch_size=8,          # Increased to 8 (A100 can handle it)
     gradient_accumulation_steps=1,
     learning_rate=2e-4,
     logging_steps=10,
@@ -71,9 +70,9 @@ sft_config = SFTConfig(
     gradient_checkpointing=True,
     packing=False,
     
-    # --- SAFEGUARD 3: STRICT DTYPE SETTINGS ---
-    fp16=True,       # Enable Standard Float16
-    bf16=False,      # EXPLICITLY Disable BFloat16 (Crash prevention)
+    # --- A100 SETTINGS ---
+    fp16=False,      # Turn OFF standard float16
+    bf16=True,       # Turn ON Brain Float 16 (Native to A100)
 )
 
 # 6. Initialize Trainer
@@ -86,7 +85,7 @@ trainer = SFTTrainer(
 )
 
 # 7. Train
-print("Starting training (T4 Compatible)...")
+print("Starting training (A100 Mode)...")
 trainer.train()
 
 # 8. Save
